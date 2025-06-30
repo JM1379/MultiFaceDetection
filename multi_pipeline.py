@@ -6,7 +6,10 @@ from collections import deque, defaultdict
 import sys
 sys.path.append(r'C:\Users\Julian\vis_impair_projects\sort')
 from sort import Sort
-print("✔︎ SORT imported successfully")
+
+# per-track raw angle history
+yaw_hist   = defaultdict(list)
+pitch_hist = defaultdict(list)
 
 # 3D model points.
 MODEL_POINTS = np.array([
@@ -27,10 +30,6 @@ LM_IDX = {
     "right_mouth": 291,
 }
 
-YAW_THRESH   = 30.0
-PITCH_THRESH = 15.0
-
-
 mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
     static_image_mode=False,
     max_num_faces=3,
@@ -40,7 +39,6 @@ mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
 
 def get_head_pose(landmarks, frame_size):
     h, w = frame_size
-    # build 2D image points
     image_points = np.array([
         (landmarks[LM_IDX["nose"]].x  * w, landmarks[LM_IDX["nose"]].y  * h),
         (landmarks[LM_IDX["chin"]].x  * w, landmarks[LM_IDX["chin"]].y  * h),
@@ -50,7 +48,6 @@ def get_head_pose(landmarks, frame_size):
         (landmarks[LM_IDX["right_mouth"]].x * w, landmarks[LM_IDX["right_mouth"]].y * h)
     ], dtype="double")
 
-    # camera internals from full frame
     focal_length = w
     center = (w/2, h/2)
     camera_matrix = np.array([
@@ -58,7 +55,7 @@ def get_head_pose(landmarks, frame_size):
         [0, focal_length, center[1]],
         [0, 0, 1]
     ], dtype="double")
-    dist_coeffs = np.zeros((4,1))  # assume no lens distortion
+    dist_coeffs = np.zeros((4,1))
 
     success, rot_vec, _ = cv2.solvePnP(
         MODEL_POINTS,
@@ -70,7 +67,6 @@ def get_head_pose(landmarks, frame_size):
     if not success:
         return None
 
-    # convert rotation vector to Euler angles
     rmat, _ = cv2.Rodrigues(rot_vec)
     sy = np.sqrt(rmat[0,0]**2 + rmat[1,0]**2)
     x = np.arctan2(rmat[2,1], rmat[2,2])
@@ -79,26 +75,26 @@ def get_head_pose(landmarks, frame_size):
     return np.degrees((x, y, z))  # pitch, yaw, roll
 
 def main(video_path):
-    
     print(f"📹 Processing video: {video_path}")
-    
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"❌  Cannot open video: {video_path}")
         return
-    
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
     delay = max(1, int(1000 / fps))
 
-    # ── Initialize SORT tracker ──
     tracker = Sort(max_age=15, min_hits=1, iou_threshold=0.3)
 
-    # ── Per-track histories ──
-    HISTORY_LEN     = 5
-    VOTE_THRESHOLD  = 3    # out of HISTORY_LEN
-    CONSEC_THRESHOLD= 30   # frames for a sustained look
+    HISTORY_LEN      = 5
+    VOTE_THRESHOLD   = 3    # out of HISTORY_LEN
+    CONSEC_THRESHOLD = 30   # frames for a sustained look
     histories  = defaultdict(lambda: deque(maxlen=HISTORY_LEN))
     consec_cnt = defaultdict(int)
+    CALIBRATION_FRAMES = 100  # or however many frames you want to “learn” on
+    track_thresholds   = {}   # will hold { track_id: (yaw_mean, yaw_thr, pitch_mean, pitch_thr) }
+
 
     print("✅  Video opened, processing...")
     frame_idx = 0
@@ -115,29 +111,22 @@ def main(video_path):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = mp_face_mesh.process(rgb)
 
-            # 1) build detection list (for SORT) and keep landmarks in parallel
-            dets = []
-            landmarks_list = []
+            dets, landmarks_list = [], []
             if results.multi_face_landmarks:
                 for lm_set in results.multi_face_landmarks:
                     xs = [lm.x for lm in lm_set.landmark]
                     ys = [lm.y for lm in lm_set.landmark]
                     x1, x2 = min(xs)*w, max(xs)*w
                     y1, y2 = min(ys)*h, max(ys)*h
-                    dets.append([x1, y1, x2, y2, 1.0])  # score=1.0
+                    dets.append([x1, y1, x2, y2, 1.0])
                     landmarks_list.append(lm_set.landmark)
 
-            # 2) update SORT and get back tracks [[x1,y1,x2,y2,track_id], ...]
-            if dets:
-                tracks = tracker.update(np.array(dets))
-            else:
-                tracks = []
+            tracks = tracker.update(np.array(dets)) if dets else []
 
-            # 3) for each track, find matching landmarks by minimal center-distance
             for x1, y1, x2, y2, track_id in tracks:
                 cx, cy = (x1+x2)/2, (y1+y2)/2
 
-                # find the detection whose center is closest to this track center
+                # associate landmarks
                 best_i, best_dist = None, float("inf")
                 for i, d in enumerate(dets):
                     dx = (d[0]+d[2])/2 - cx
@@ -153,31 +142,41 @@ def main(video_path):
                 pitch, yaw, roll = angles
 
                 # normalize pitch into [-90, +90]
-                if pitch > 180:      pitch -= 360
-                elif pitch < -180:   pitch += 360
-                if pitch > 90:       pitch = 180 - pitch
-                elif pitch < -90:    pitch = -180 - pitch
+                if pitch > 180:    pitch -= 360
+                elif pitch < -180: pitch += 360
+                if pitch > 90:     pitch = 180 - pitch
+                elif pitch < -90:  pitch = -180 - pitch
+
+                # record raw angles
+                yaw_hist[track_id].append(yaw)
+                pitch_hist[track_id].append(pitch)
+
+                # compute dynamic thresholds
+                y_vals = np.array(yaw_hist[track_id])
+                p_vals = np.array(pitch_hist[track_id])
+                y_mean, y_std = y_vals.mean(), y_vals.std()
+                p_mean, p_std = p_vals.mean(), p_vals.std()
+                yaw_t   = y_std * 1.5 + 5
+                pitch_t = p_std * 1.5 + 5
 
                 # decide “is looking”
-                is_looking = (abs(yaw)   < YAW_THRESH) \
-                          and (abs(pitch) < PITCH_THRESH)
+                is_looking = (abs(yaw - y_mean)   < yaw_t) \
+                          and (abs(pitch - p_mean) < pitch_t)
 
-                # update history & stable decision
+                # smoothing and sustained logic
                 hist = histories[track_id]
                 hist.append(is_looking)
                 stable = sum(hist) >= VOTE_THRESHOLD
 
-                # update consecutive-look counter
                 if stable:
                     consec_cnt[track_id] += 1
                 else:
                     consec_cnt[track_id] = 0
 
-                # trigger when sustained
                 if consec_cnt[track_id] == CONSEC_THRESHOLD:
                     print(f"💬 Track {int(track_id)} is now addressing the camera!")
 
-                # draw box, ID and statuses
+                # draw
                 col = (0,255,0) if stable else (0,0,255)
                 cv2.rectangle(frame,
                               (int(x1),int(y1)),
@@ -187,22 +186,21 @@ def main(video_path):
                             (int(x1), int(y1)-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
 
-            # show frame
-            #cv2.imshow("Group Pose Estimation", frame)
-            #if cv2.waitKey(1) & 0xFF == ord('q'):
-            #    print("🛑 Interrupted by user")
-            #    break
-            
             cv2.imshow("Group Pose Estimation", frame)
-            # wait according to video fps
             if cv2.waitKey(delay) & 0xFF == ord('q'):
                 print("🛑 Interrupted by user")
                 break
-            
+
         except Exception:
             print(f"⚠️ Error on frame {frame_idx}:")
             traceback.print_exc()
             break
+
+    # at the end, print each track’s yaw/pitch stats
+    for tid in yaw_hist:
+        print(f"Track {int(tid)} calibration → "
+              f"yaw μ={np.mean(yaw_hist[tid]):.1f}±{np.std(yaw_hist[tid]):.1f}, "
+              f"pitch μ={np.mean(pitch_hist[tid]):.1f}±{np.std(pitch_hist[tid]):.1f}")
 
     cap.release()
     cv2.destroyAllWindows()
