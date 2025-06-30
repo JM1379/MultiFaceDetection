@@ -4,14 +4,13 @@ import mediapipe as mp
 import sys
 from collections import deque, defaultdict
 
-# add your SORT directory
 sys.path.append(r'C:\Users\Julian\vis_impair_projects\sort')
 from sort import Sort
 
 # ── CONFIG ────────────────────────────────────────────────────────────────
 MAX_FACES     = 3
-YAW_THRESH    = 35.0    # degrees tolerance for yaw    # degrees tolerance for yaw
-PITCH_THRESH  = 6.0     # degrees tolerance for pitch    # degrees tolerance for pitch
+YAW_THRESH    = 39.0    # degrees tolerance for yaw
+PITCH_THRESH  = 8.0     # degrees tolerance for pitch
 HISTORY_LEN   = 5       # frames to consider for smoothing
 VOTE_THRESHOLD= 3       # required True votes in HISTORY_LEN
 CONSEC_FRAMES = 30      # consecutive frames of stable look to trigger event
@@ -36,7 +35,7 @@ LM_IDX = {
     'right_mouth': 291
 }
 
-# initialize MediaPipe Face Mesh
+# initialise MediaPipe Face Mesh
 tmp = mp.solutions.face_mesh.FaceMesh
 mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
     static_image_mode=False,
@@ -59,7 +58,7 @@ def get_head_pose(landmarks, frame_size):
         (landmarks[LM_IDX['right_mouth']].x * w, landmarks[LM_IDX['right_mouth']].y * h)
     ], dtype='double')
 
-    # camera parameters
+    # camera params
     focal = w
     center = (w/2, h/2)
     cam_mat = np.array([
@@ -82,7 +81,7 @@ def get_head_pose(landmarks, frame_size):
     pitch = np.degrees(np.arctan2(R[2,1], R[2,2]))
     yaw   = np.degrees(np.arctan2(-R[2,0], sy))
 
-        # normalize pitch to [-180,180]
+    # normalize pitch to [-180,180]
     if pitch > 180:
         pitch -= 360
     elif pitch < -180:
@@ -99,12 +98,12 @@ def get_head_pose(landmarks, frame_size):
 def main(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"❌ Cannot open video: {video_path}")
+        print(f"Cannot open video: {video_path}")
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    print(f"▶️ Opened {video_path}: {total} frames @ {fps:.1f}fps")
+    print(f"Opened {video_path}: {total} frames @ {fps:.1f}fps")
 
     delay = max(1, int(1000/fps))
     recorder = Sort(max_age=30, min_hits=1, iou_threshold=0.3)
@@ -116,7 +115,7 @@ def main(video_path):
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("🔚 End of video")
+            print("Video ended")
             break
         frame_idx += 1
 
@@ -165,7 +164,7 @@ def main(video_path):
             if stable:
                 consec_count[tid] += 1
                 if consec_count[tid] == CONSEC_FRAMES:
-                    print(f"💬 Track {tid} now addressing the camera!")
+                    print(f"Person {tid} now addressing the camera!")
             else:
                 consec_count[tid] = 0
 
