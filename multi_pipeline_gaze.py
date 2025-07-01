@@ -9,8 +9,8 @@ from sort import Sort
 
 # ── CONFIG ────────────────────────────────────────────────────────────────
 MAX_FACES     = 3
-YAW_THRESH    = 39.0    # degrees tolerance for yaw
-PITCH_THRESH  = 8.0     # degrees tolerance for pitch
+YAW_THRESH    = 40.0    # degrees tolerance for yaw
+PITCH_THRESH  = 18.0     # degrees tolerance for pitch
 HISTORY_LEN   = 5       # frames to consider for smoothing
 VOTE_THRESHOLD= 3       # required True votes in HISTORY_LEN
 CONSEC_FRAMES = 30      # consecutive frames of stable look to trigger event
